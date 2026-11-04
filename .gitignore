@@ -1,0 +1,65 @@
+# =============================================================================
+# 1. API Keys & Secrets (TUYỆT ĐỐI KHÔNG PUSH LÊN GITHUB)
+# =============================================================================
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# =============================================================================
+# 2. Script điều chỉnh README & các bản README cũ / backup
+#    (Chỉ giữ lại duy nhất file README.md mới nhất ở thư mục gốc)
+# =============================================================================
+tools/update_readme.py
+README_*.md
+README.*.md
+README.bak*
+README_old*
+**/README_*.md
+outputs/readme_backups/
+
+# =============================================================================
+# 3. Môi trường ảo Python & Bytecode
+# =============================================================================
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# =============================================================================
+# 4. Dữ liệu tải về, Cache API, Logs & Outputs thực nghiệm
+#    - Dữ liệu gốc của tác giả tải bằng: python tools/fetch_authors_data.py
+#    - Bảng kết quả đối chiếu đã có bản snapshot gọn nhẹ trong docs/results/
+# =============================================================================
+data/authors/
+cache/
+logs/
+*.log
+outputs/
+
+# =============================================================================
+# 5. Trọng số model lớn (nếu lưu ngoài outputs/)
+# =============================================================================
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+
+# =============================================================================
+# 6. File hệ điều hành & IDE
+# =============================================================================
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*~

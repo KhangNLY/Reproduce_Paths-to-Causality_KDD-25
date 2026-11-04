@@ -1,0 +1,12 @@
+numpy>=1.24
+requests>=2.31
+tqdm>=4.66
+xgboost>=2.0            # lambdarank_pair_method / lambdarank_num_pair_per_sample cần >= 2.0
+# --- PyTorch: cài bản CUDA riêng theo hướng dẫn trong README (bản pip mặc định có thể là CPU-only) ---
+torch>=2.1
+transformers>=4.44      # Cross-Encoder (Module 2) và LLM local (Module 3, backend hf)
+sentence-transformers>=2.7   # chỉ cần cho option similarity_recompute / --verify-sim
+# --- tuỳ chọn cho LLM local trên GPU 16GB ---
+accelerate>=0.30        # device_map="auto"
+bitsandbytes>=0.43      # --quant 4bit / 8bit
+
