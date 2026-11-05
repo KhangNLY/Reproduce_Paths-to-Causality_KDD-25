@@ -1,0 +1,9 @@
+[theme]
+base = "light"
+primaryColor = "#087F78"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#e4ebf1"
+textColor = "#000000"
+
+[server]
+gatherUsageStats = false

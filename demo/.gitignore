@@ -1,0 +1,21 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+data/raw/*
+!data/raw/.gitkeep
+data/benchmark/*.csv
+!data/benchmark/.gitkeep
+models/*.json
+!models/.gitkeep
+# Checkpoint lớn không commit: cross-encoder (~500MB/model) và artifact repo.
+# Đặt checkpoint tại đúng đường dẫn cố định (xem README) nhưng giữ ngoài git.
+models/ce/
+models/repo_ranker/
+results/*
+!results/.gitkeep
+
+# Override chạy song song cục bộ với project cũ (port 8502) - không đẩy lên repo
+docker-compose.override.yml
