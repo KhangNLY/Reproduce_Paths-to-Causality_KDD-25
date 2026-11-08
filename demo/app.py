@@ -5,6 +5,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from src.neo4j_store import KGStore
 from src.pipeline import analyze_pair
+from src import config
 from src.config import settings
 from src.llm import LocalLLMError, describe_input_vi, direct_predict_causality, translate_to_vietnamese
 from src.visualization import build_graph_payload, build_pair_graph_payload, render_graph_html
@@ -135,8 +136,8 @@ def get_store():
 
 
 @st.cache_resource
-def get_ranker():
-    return PathRanker()
+def get_ranker(choice: str = "auto"):
+    return PathRanker(choice=choice)
 
 
 @st.cache_data(show_spinner=False)
@@ -196,11 +197,59 @@ with st.sidebar:
         help="Direct LLM gửi node/edge/context thẳng tới Z.ai và không chạy ranker.",
     )
     top_k = st.slider("Top-k paths to LLM", min_value=1, max_value=5, value=min(settings.top_k_paths, 5))
-    st.caption(
-        f"Pipeline LLM provider: **{settings.llm_provider}** · model `{settings.llm_model or settings.ollama_model}`"
-        + (f" · endpoint `{settings.llm_base_url}`" if settings.llm_provider == "openai" else "")
-        + f" · prompt style `{settings.causal_prompt_style}`. Ranker: ưu tiên artifact repo chính (REPO_RANKER_DIR), rồi XGBoost local, rồi lexical baseline."
+
+    st.markdown("**LLM provider**")
+    provider_choice = st.selectbox(
+        "Pipeline LLM",
+        ["ollama", "openai"],
+        index=0 if settings.llm_provider == "ollama" else 1,
+        format_func=lambda v: "Ollama local (raw API)" if v == "ollama" else "OpenAI-compatible (OpenRouter, vLLM, LM Studio, Ollama /v1…)",
+        help="Chuyển toàn bộ pipeline (classify/translate/relevance) sang endpoint tương thích OpenAI. Key đọc từ biến môi trường.",
     )
+    llm_model_input = ""
+    llm_base_input = ""
+    if provider_choice == "openai":
+        llm_base_input = st.text_input(
+            "Base URL", value=settings.llm_base_url,
+            help="vd https://openrouter.ai/api/v1 · http://host.docker.internal:11434/v1 (Ollama) · http://host.docker.internal:8000/v1 (vLLM)",
+        )
+        llm_model_input = st.text_input(
+            "Model ID", value=settings.llm_model or "",
+            placeholder="vd mistralai/mistral-nemo · qwen2.5:7b",
+        )
+        st.caption(f"API key: đọc từ biến môi trường `{settings.llm_api_key_env}` (server local không cần).")
+    prompt_style = st.selectbox(
+        "Prompt classify",
+        ["demo", "paper"],
+        index=0 if settings.causal_prompt_style == "demo" else 1,
+        format_func=lambda v: "Demo (JSON, có explanation)" if v == "demo" else "Paper (tcma template, trả 1 từ)",
+    )
+    config.reload(
+        llm_provider=provider_choice,
+        llm_base_url=llm_base_input or None,
+        llm_model=llm_model_input or None,
+        causal_prompt_style=prompt_style,
+    )
+    st.caption(
+        f"Provider: **{settings.llm_provider}** · model `{settings.llm_model or settings.ollama_model}`"
+        + (f" · endpoint `{settings.llm_base_url}`" if settings.llm_provider == "openai" else "")
+        + f" · prompt `{settings.causal_prompt_style}`"
+    )
+
+    st.markdown("**Ranker / checkpoint**")
+    ranker_choices = PathRanker.choices()
+    ranker_values = [v for v, _ in ranker_choices]
+    ranker_labels = {v: lbl for v, lbl in ranker_choices}
+    default_ranker = st.session_state.get("ranker_choice", "auto")
+    ranker_choice = st.selectbox(
+        "Ranking model",
+        ranker_values,
+        index=ranker_values.index(default_ranker) if default_ranker in ranker_values else 0,
+        format_func=lambda v: ranker_labels.get(v, v),
+        help="Checkpoint cross-encoder (.safetensors) nằm tại models/ce; XGBoost artifact tại models/repo_ranker. Chọn 'Tự động' để dùng tốt nhất khả dụng.",
+    )
+    st.session_state["ranker_choice"] = ranker_choice
+    st.caption("Inference dùng ranker chọn ở đây; caption 'Ranking method' trong kết quả xác nhận model thực sự chạy.")
     st.markdown("**Services**")
     st.write("Streamlit · Neo4j · Ollama")
 
@@ -327,7 +376,7 @@ if e1 and e2:
             "Pool TRƯỚC ranker giữ đúng thứ tự extraction (chưa xếp hạng liên quan). "
             + ("Nguồn: Hetionet local." if pool_source == "hetionet" else "Nguồn: metapath benchmark (node không có trong Hetionet local).")
         )
-        pool_ranker = get_ranker()
+        pool_ranker = get_ranker(st.session_state.get("ranker_choice", "auto"))
         if pool_source == "paper":
             ranked_preview = pool_ranker.rank_by_paper_score(pool)
         else:
@@ -391,6 +440,7 @@ if run:
                     e1, e2, context.strip(), top_k=top_k,
                     context_vi=selected_sample.get("context_vi") if selected_sample else None,
                     mode=mode_key, sample=selected_sample,
+                    ranker_choice=st.session_state.get("ranker_choice", "auto"),
                 )
             st.session_state["compare_results"] = compare
             st.session_state["analysis_signature"] = input_signature
@@ -449,6 +499,7 @@ if run:
                         context_vi=selected_sample.get("context_vi") if selected_sample else None,
                         progress=report_progress,
                         sample=selected_sample,
+                        ranker_choice=st.session_state.get("ranker_choice", "auto"),
                     )
                 st.session_state["analysis_result"] = result
                 st.session_state["analysis_signature"] = input_signature

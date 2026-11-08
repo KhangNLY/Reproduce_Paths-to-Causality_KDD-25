@@ -18,6 +18,7 @@ def analyze_pair(
     progress=None,
     mode: str = "paper",
     sample: dict | None = None,
+    ranker_choice: str | None = None,
 ) -> dict:
     """Run one pairwise prediction.
 
@@ -42,7 +43,7 @@ def analyze_pair(
     if progress:
         progress(f"State 3/5 · KG: {len(raw_paths)} metapath từ {path_source}")
 
-    ranker = PathRanker()
+    ranker = PathRanker(choice=ranker_choice)
     if mode == "no_kg":
         ranked = []
         ranker_mode = "No-KG baseline (chỉ context + entity, không dùng KG)"

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 import os
 import numpy as np
 from src.features import FEATURE_NAMES, path_features, path_text
@@ -22,22 +23,82 @@ class PathRanker:
 
     Paper-sourced metapaths (rel_score của Module-1) vẫn xếp theo
     rank_by_paper_score(), không đi qua các model này.
+
+    choice (từ UI): None = tự động theo thứ tự trên; "ce:<tên>" = buộc dùng
+    cross-encoder đó (nếu load được, không thì báo rõ); "repo_xgb", "local_xgb",
+    "lexical" = buộc dùng cấp tương ứng.
     """
-    def __init__(self):
+    def __init__(self, choice: str | None = None):
         from src.repo_ce_ranker import RepoCrossEncoderRanker, discover_best_ce
-        self.ce_model_dir = discover_best_ce(settings.repo_ce_dir)
-        self.ce_model = (RepoCrossEncoderRanker.try_load(self.ce_model_dir)
-                         if self.ce_model_dir else None)
+        self.choice = choice
+        self.ce_model_dir = None
+        self.ce_model = None
+        self.repo_model = None
         self.model = None
-        self.repo_model = RepoRanker.try_load(settings.repo_ranker_dir)
-        if os.path.exists(settings.ranker_path):
+        if choice in (None, "", "auto") or choice.startswith("ce:"):
+            wanted = choice[3:] if choice and choice.startswith("ce:") else None
+            candidates = []
+            if wanted:
+                for name in sorted(os.listdir(settings.repo_ce_dir)) if os.path.isdir(settings.repo_ce_dir) else []:
+                    if wanted in name:
+                        candidates.append(os.path.join(settings.repo_ce_dir, name))
+            else:
+                best = discover_best_ce(settings.repo_ce_dir)
+                candidates = [best] if best else []
+            for d in candidates:
+                loaded = RepoCrossEncoderRanker.try_load(d)
+                if loaded is not None:
+                    self.ce_model, self.ce_model_dir = loaded, d
+                    break
+        if self.ce_model is None and choice in (None, "", "auto", "repo_xgb"):
+            self.repo_model = RepoRanker.try_load(settings.repo_ranker_dir)
+        if self.ce_model is None and self.repo_model is None and choice in (None, "", "auto", "local_xgb"):
+            if os.path.exists(settings.ranker_path):
+                try:
+                    from xgboost import XGBRanker
+                    model = XGBRanker()
+                    model.load_model(settings.ranker_path)
+                    self.model = model
+                except Exception:
+                    self.model = None
+
+    @classmethod
+    def choices(cls) -> list[tuple[str, str]]:
+        """Liệt kê (value, nhãn) cho UI: tự động + từng checkpoint khả dụng."""
+        from src.repo_ce_ranker import discover_best_ce
+        out = [("auto", "Tự động (CE repo → XGB repo → XGB local → lexical)")]
+        root = settings.repo_ce_dir
+        if os.path.isdir(root):
             try:
-                from xgboost import XGBRanker
-                model = XGBRanker()
-                model.load_model(settings.ranker_path)
-                self.model = model
-            except Exception:
-                self.model = None
+                import torch  # noqa: F401
+                import transformers  # noqa: F401
+                can_ce = True
+            except ImportError:
+                can_ce = False
+            best = discover_best_ce(root)
+            for name in sorted(os.listdir(root)):
+                d = os.path.join(root, name)
+                if not name.startswith("model_") or not os.path.isdir(d):
+                    continue
+                if not os.path.exists(os.path.join(d, "model.safetensors")):
+                    continue
+                try:
+                    meta = json.loads(open(os.path.join(d, "train_meta.json"), encoding="utf-8").read())
+                    ndcg = meta.get("test_corrected_top5_NDCG@5")
+                    label = f"Cross-encoder {meta.get('ranker', 'ce')} ({meta.get('task', '')}, NDCG@5={ndcg})"
+                except Exception:
+                    label = name
+                if not can_ce:
+                    label += " — cần torch (chưa cài trong env này)"
+                if best and os.path.samefile(best, d):
+                    label += " · tốt nhất"
+                out.append((f"ce:{name}", label))
+        if RepoRanker.try_load(settings.repo_ranker_dir) is not None:
+            out.append(("repo_xgb", "XGBoost + n-gram của repo (models/repo_ranker)"))
+        if os.path.exists(settings.ranker_path):
+            out.append(("local_xgb", "XGBoost local 6-feature (models/xgb_ranker.json)"))
+        out.append(("lexical", "Lexical heuristic baseline"))
+        return out
 
     @property
     def mode(self) -> str:
@@ -50,6 +111,8 @@ class PathRanker:
                     f"labels={self.repo_model.include_node_labels and 'có' or 'không'} node-label)")
         if self.model is not None:
             return "XGBoost pairwise ranker (objective=rank:pairwise)"
+        if self.choice == "lexical":
+            return "Lexical heuristic (đã chọn trong UI)"
         return "Lexical heuristic (no trained XGBoost model found)"
 
     def rank(self, paths: list[dict], context: str, entity_1: str, entity_2: str) -> list[dict]:
@@ -79,7 +142,7 @@ class PathRanker:
             else:
                 feats = path_features(p, context, entity_1, entity_2)
                 item["features"] = dict(zip(FEATURE_NAMES, feats))
-            item["path_text"] = __import__("src.features", fromlist=["path_text"]).path_text(p)
+            item["path_text"] = path_text(p)
             out.append(item)
         return sorted(out, key=lambda z: z["rank_score"], reverse=True)
 

@@ -169,8 +169,9 @@ class RepoRankerTests(unittest.TestCase):
         try:
             import xgboost  # noqa: F401
             import numpy  # noqa: F401
-        except ImportError:
-            self.skipTest("xgboost/numpy chưa cài trong Python này (có trong Docker demo)")
+        except Exception:
+            # ImportError (chưa cài) hoặc XGBoostError (thiếu libomp native): đều skip
+            self.skipTest("xgboost/numpy chưa chạy được trong Python này (có trong Docker demo)")
         import tempfile
         import numpy as np
         from xgboost import XGBRanker

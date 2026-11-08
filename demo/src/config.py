@@ -1,7 +1,7 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
-@dataclass(frozen=True)
+@dataclass
 class Settings:
     neo4j_uri: str = os.getenv("NEO4J_URI", "bolt://localhost:7687")
     neo4j_user: str = os.getenv("NEO4J_USER", "neo4j")
@@ -42,3 +42,22 @@ class Settings:
     repo_ce_dir: str = os.getenv("REPO_CE_DIR", "models/ce")
 
 settings = Settings()
+
+
+def reload(**overrides) -> None:
+    """Cập nhật settings lúc runtime từ UI (Streamlit widget).
+
+    Nhận keyword tương ứng tên field; giá trị None/'' bỏ qua (giữ nguyên).
+    """
+    mapping = {f.name: f for f in fields(Settings)}
+    for key, value in overrides.items():
+        if key not in mapping or value is None or value == "":
+            continue
+        current = getattr(settings, key)
+        if isinstance(current, int) and not isinstance(value, bool):
+            value = int(value)
+        elif isinstance(current, bool):
+            value = bool(value)
+        else:
+            value = str(value)
+        setattr(settings, key, value)
