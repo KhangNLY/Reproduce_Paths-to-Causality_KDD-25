@@ -60,7 +60,8 @@ class RepoCrossEncoderRanker:
                   "trong Python đang chạy -> bỏ qua (xem requirements.txt của demo).")
             return None
         try:
-            dev = torch.device(device or ("cpu"))
+            # Ưu tiên GPU khi có (Colab T4 / CUDA local); tự rơi về CPU.
+            dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
             tok = AutoTokenizer.from_pretrained(dir_path)
             model = AutoModelForSequenceClassification.from_pretrained(dir_path)
             model.to(dev)
