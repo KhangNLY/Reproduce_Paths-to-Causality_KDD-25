@@ -648,6 +648,34 @@ if result:
         st.write("**Tiếng Việt:**", result["context_vi"])
     st.warning("Nhãn causal/non-causal là dự đoán cho cặp thực thể dựa trên context và đường dẫn KG; không khẳng định quan hệ nhân quả đã được chứng minh. Nếu có đường nét đứt, đó chỉ là overlay dự đoán, không được ghi vào Hetionet.")
 
+    # ---- Tải báo cáo HTML tĩnh (mở bằng trình duyệt bất kỳ, không cần chạy app) ----
+    try:
+        from src.report_export import build_report_html
+        from src.visualization import build_graph_payload as _bgp, render_graph_html as _rgh
+        _author = {}
+        if selected_sample:
+            _author = load_author_predictions().get((
+                str(selected_sample.get("dataset", "")).lower(),
+                str(selected_sample.get("e1", selected_sample.get("entity_1", ""))),
+                str(selected_sample.get("e2", selected_sample.get("entity_2", ""))),
+                str(selected_sample.get("qid")),
+            ), {})
+        _report_html = build_report_html(
+            result,
+            compare_results=st.session_state.get("compare_results"),
+            author_preds=_author,
+            graph_html=_rgh(_bgp(result["top_paths"], result["entity_1"], result["entity_2"], pred["label"]), height="480px"),
+        )
+        _fname = f"demo_report_{(result['entity_1'].get('name') or 'e1')}_{(result['entity_2'].get('name') or 'e2')}.html".replace(" ", "_").replace("/", "-")
+        st.download_button(
+            "⬇️ Tải báo cáo HTML (chia sẻ — mở bằng trình duyệt, không cần app)",
+            data=_report_html, file_name=_fname, mime="text/html",
+            use_container_width=True,
+            help="File HTML tự chứa (đồ thị nhúng inline): gửi cho người khác mở trực tiếp, copy dữ liệu bảng thoải mái.",
+        )
+    except Exception as _err:
+        st.caption(f"(Không tạo được báo cáo HTML: {_err})")
+
     st.subheader("6. Ranked KG paths")
     if not result["ranked_paths"]:
         st.info("Không tìm được đường đi ngắn nhất trong Hetionet với giới hạn hop hiện tại. Điều này không chứng minh hai thực thể không có quan hệ nhân quả.")
