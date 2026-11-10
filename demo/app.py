@@ -112,6 +112,37 @@ def load_dataset_samples() -> list[dict]:
             sample["zai_result"] = inference_cache[key]
     return samples
 
+
+# Dự đoán CÓ SẴN của tác giả theo từng ranker (không cần chạy lại LLM):
+# test_truth = Subgraph Ranker, test_gpt_* = RankGPT, test_sim = similarity.
+# (dataset, e1, e2, qid) -> {ranker_label: llm_pred}
+@st.cache_data
+def load_author_predictions() -> dict:
+    from collections import defaultdict
+    out: dict = defaultdict(dict)
+    labels = {"truth": "Subgraph Ranker (tác giả)", "sim": "Similarity (tác giả)"}
+    for path in sorted(DATASET_ROOT.glob("*/test_*.jsonl")):
+        ds = path.parent.name
+        stem = path.stem  # test_truth / test_gpt_x / test_sim
+        label = None
+        if stem == "test_truth":
+            label = labels["truth"]
+        elif stem == "test_sim":
+            label = labels["sim"]
+        elif stem.startswith("test_gpt_"):
+            label = "RankGPT (tác giả)"
+        if not label:
+            continue
+        for line in path.open(encoding="utf-8"):
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            out[(ds, str(r.get("e1")), str(r.get("e2")), str(r.get("qid")))][label] = {
+                "pred": str(r.get("llm_pred", "")),
+                "ground_truth": str(r.get("ground_truth", "")),
+            }
+    return dict(out)
+
 samples = load_dataset_samples()
 
 
@@ -217,7 +248,16 @@ with st.sidebar:
             "Model ID", value=settings.llm_model or "",
             placeholder="vd mistralai/mistral-nemo · qwen2.5:7b",
         )
-        st.caption(f"API key: đọc từ biến môi trường `{settings.llm_api_key_env}` (server local không cần).")
+        st.text_input(
+            "API key (tùy chọn)", type="password", key="llm_api_key_input",
+            help="Điền thẳng vào UI cho tiện; để trống sẽ dùng biến môi trường "
+                 f"`{settings.llm_api_key_env}` (server local không cần key).",
+        )
+        import os as _os
+        _ui_key = st.session_state.get("llm_api_key_input", "").strip()
+        if _ui_key:
+            _os.environ[settings.llm_api_key_env] = _ui_key
+        st.caption(f"Key ưu tiên từ ô nhập trên; nếu trống dùng biến môi trường `{settings.llm_api_key_env}`.")
     prompt_style = st.selectbox(
         "Prompt classify",
         ["demo", "paper"],
@@ -371,33 +411,42 @@ if e1 and e2:
         pool, pool_source = [], "none"
         st.warning(f"Không extract được metapath pool: {error}")
     if pool:
-        n_show = st.slider("Số metapath hiển thị", min_value=1, max_value=min(10, len(pool)), value=min(5, len(pool)), key="n_metapaths_show")
-        st.caption(
-            "Pool TRƯỚC ranker giữ đúng thứ tự extraction (chưa xếp hạng liên quan). "
-            + ("Nguồn: Hetionet local." if pool_source == "hetionet" else "Nguồn: metapath benchmark (node không có trong Hetionet local).")
-        )
+        # ---- TRƯỚC ranker: 1 subgraph gộp toàn bộ pool (giới hạn hiển thị 100 path) ----
+        POOL_SHOW_CAP = 100
+        pool_show = pool[:POOL_SHOW_CAP]
         pool_ranker = get_ranker(st.session_state.get("ranker_choice", "auto"))
         if pool_source == "paper":
             ranked_preview = pool_ranker.rank_by_paper_score(pool)
         else:
             ranked_preview = pool_ranker.rank(pool, context, e1["name"], e2["name"])
 
-        before_col, after_col = st.columns(2)
-        with before_col:
-            st.markdown(f"**Trước ranker · {min(n_show, len(pool))}/{len(pool)} path đầu (theo thứ tự extract)**")
-            for idx, p in enumerate(pool[:n_show], start=1):
-                st.markdown(f"`#{idx}` · {p.get('hops', '?')} hops")
-                st.caption(path_text(p)[:180] + ("…" if len(path_text(p)) > 180 else ""))
-            g_before = render_graph_html(build_graph_payload(pool[:n_show], e1, e2, "uncertain"), height="320px")
-            components.html(g_before, height=340, scrolling=True)
-        with after_col:
-            st.markdown(f"**Sau ranker · top {min(n_show, len(ranked_preview))} theo rank_score**")
-            for idx, p in enumerate(ranked_preview[:n_show], start=1):
-                st.markdown(f"`#{idx}` · score `{p['rank_score']:.4f}` · {p.get('hops', '?')} hops")
-                st.caption((p.get("path_text") or path_text(p))[:180] + ("…" if len(p.get("path_text") or "") > 180 else ""))
-            g_after = render_graph_html(build_graph_payload(ranked_preview[:n_show], e1, e2, "uncertain"), height="320px")
-            components.html(g_after, height=340, scrolling=True)
-        st.caption("Hai đồ thị dùng chung màu node theo loại; đồ thị phải là thứ tự SAU khi xếp hạng bằng ranker — so sánh trực quan thấy ranker đổi vị trí/path nào.")
+        st.markdown(f"**Trước ranker · subgraph của {len(pool_show)}/{len(pool)} metapath** (thứ tự extraction, hiển thị tối đa {POOL_SHOW_CAP})")
+        st.caption(
+            "Pool TRƯỚC ranker giữ đúng thứ tự extraction (chưa xếp hạng liên quan). "
+            + ("Nguồn: Hetionet local." if pool_source == "hetionet" else "Nguồn: metapath benchmark (node không có trong Hetionet local).")
+        )
+        g_pool = render_graph_html(build_graph_payload(pool_show, e1, e2, "uncertain"), height="420px")
+        components.html(g_pool, height=440, scrolling=True)
+
+        # ---- SAU ranker: kéo thả chọn 1..30 path đã sort theo score ----
+        n_ranked = min(30, len(ranked_preview))
+        n_sel = st.slider(
+            "Số metapath sau ranker hiển thị trên subgraph", min_value=1, max_value=n_ranked,
+            value=min(3, n_ranked), key="n_ranked_show",
+            help="Path đã được ranker sort theo rank_score giảm dần; subgraph vẽ đúng số path bạn chọn.",
+        )
+        sel = ranked_preview[:n_sel]
+        st.markdown(f"**Sau ranker · top {n_sel}/{len(ranked_preview)} theo rank_score** (`{pool_ranker.mode}`)")
+        for idx, p in enumerate(sel, start=1):
+            score = p.get("rank_score", 0.0)
+            extra = ""
+            if pool_source == "paper":
+                extra = f" · rel_score={p.get('rel_score', 0):.4f}"
+            st.markdown(f"`#{idx}` · score `{float(score):.4f}` · {p.get('hops', '?')} hops{extra}")
+            st.caption((p.get("path_text") or path_text(p))[:180] + ("…" if len(p.get("path_text") or "") > 180 else ""))
+        g_after = render_graph_html(build_graph_payload(sel, e1, e2, "uncertain"), height="420px")
+        components.html(g_after, height=440, scrolling=True)
+        st.caption("Subgraph trên là các path SAU xếp hạng (score cao nhất đứng đầu) — kéo slider để tăng/giảm số path vẽ; đồ thị dưới pool là toàn bộ ứng viên chưa xếp hạng.")
     else:
         st.info("Chưa có metapath pool cho cặp entity này (KG không có đường đi trong giới hạn hop và benchmark không kèm metapath).")
 else:
@@ -515,7 +564,7 @@ compare_results = st.session_state.get("compare_results")
 if compare_results:
     st.divider()
     st.subheader("4. So sánh 3 chế độ trên cùng một cặp entity")
-    st.caption("Cùng input, ba đường suy luận khác nhau — tương ứng các dòng trong bảng so sánh của paper: pipeline đầy đủ, baseline không ranker, và baseline không dùng KG.")
+    st.caption("Cùng input, ba đường suy luận khác nhau — tương ứng các dòng trong bảng so sánh của paper: pipeline đầy đủ, baseline không ranker, và baseline không dùng KG. Các dòng 'tác giả' là dự đoán có sẵn trong benchmark (không chạy lại LLM).")
     truth = GROUND_TRUTH_LABELS_VI.get(str((selected_sample or {}).get("ground_truth", "")), "—")
     header = st.columns([2.2, 1.2, 1.2, 2.6])
     for col, label in zip(header, ["Chế độ", "Dự đoán", "Ground truth", "Đường suy luận"]):
@@ -543,6 +592,33 @@ if compare_results:
         with st.expander(f"Explanation ({mode_label})", expanded=False):
             st.write(r["prediction"]["explanation"])
             st.write(r["explanation_vi"])
+
+    # ---- Dự đoán CÓ SẴN của tác giả theo từng ranker (đọc từ benchmark, không gọi LLM) ----
+    author_preds = {}
+    if selected_sample:
+        author_all = load_author_predictions()
+        author_preds = author_all.get((
+            str(selected_sample.get("dataset", "")).lower(),
+            str(selected_sample.get("e1", selected_sample.get("entity_1", ""))),
+            str(selected_sample.get("e2", selected_sample.get("entity_2", ""))),
+            str(selected_sample.get("qid")),
+        ), {})
+    if author_preds:
+        st.markdown("**Dự đoán của tác giả (đã có sẵn trong benchmark — mỗi ranker một tập dự đoán):**")
+        for label, info in author_preds.items():
+            pred = info.get("pred")
+            if pred not in ("0", "1"):
+                continue  # file không kèm llm_pred cho ranker này (vd test_sim chỉ có ranking)
+            row = st.columns([2.2, 1.2, 1.2, 2.6])
+            gt = GROUND_TRUTH_LABELS_VI.get(info.get("ground_truth", ""), "—")
+            shown = PREDICTION_LABELS_VI.get("causal" if pred == "1" else "non-causal", pred)
+            color = ":green[" if pred == "1" else ":red["
+            row[0].write(label)
+            row[1].markdown(f"{color}{shown}]")
+            row[2].write(gt)
+            row[3].caption("llm_pred có sẵn trong file test tương ứng ranker")
+    elif selected_sample:
+        st.caption("(Cặp này không có dự đoán của tác giả trong benchmark.)")
     st.session_state["analysis_result"] = compare_results.get("paper")
 
 result = st.session_state.get("analysis_result")
